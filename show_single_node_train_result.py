@@ -3,9 +3,12 @@ show_single_node_train_result.py
 
 Reads training_metrics.json from single_node_finetuning/
 and displays:
-1. Formatted terminal overview tables with training loss, perplexity, and token accuracy.
-2. High-resolution multi-panel plots generated using matplotlib (Loss, PPL, Accuracy, Throughput).
-3. Terminal ASCII line diagrams for loss and accuracy.
+1. Run overview and hardware metadata.
+2. Training loss, perplexity, and token accuracy summary deltas.
+3. Detailed Training Time & Efficiency Report.
+4. High-resolution multi-panel plots generated using matplotlib (Loss, PPL, Accuracy, Throughput).
+5. Terminal ASCII line diagrams for loss and accuracy.
+6. Step progression snapshot table.
 """
 
 import json
@@ -29,6 +32,17 @@ console = Console()
 
 METRICS_FILE = Path("./single_node_finetuning/training_metrics.json")
 PLOT_OUTPUT_FILE = Path("./single_node_finetuning/training_metrics_plot.png")
+
+
+def format_duration(seconds: float) -> str:
+    """Format seconds into human-readable duration (e.g. 1h 23m 45s or 2m 15s)."""
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{int(minutes)}m {sec:04.1f}s ({seconds:.1f}s total)"
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours)}h {int(minutes)}m {sec:02.0f}s ({seconds:.1f}s total)"
 
 
 def render_ascii_line_chart(values, steps, height=7, width=50, title="Curve", y_format="{:6.2f}"):
@@ -162,7 +176,7 @@ def main():
     console.print(
         Panel.fit(
             "[bold white]Single Node Fine-Tuning Results & Metrics Dashboard[/bold white]\n"
-            "[dim]Tracking training loss, perplexity, token accuracy & Matplotlib graphics[/dim]",
+            "[dim]Tracking training loss, perplexity, token accuracy, time report & Matplotlib graphics[/dim]",
             border_style="magenta",
             box=box.DOUBLE,
         )
@@ -184,6 +198,7 @@ def main():
     total_elapsed = summary.get("total_elapsed_sec") or (steps_data[-1]["elapsed_sec"] if steps_data else 0.0)
     total_tokens = summary.get("total_tokens_processed") or (steps_data[-1]["total_tokens"] if steps_data else 0)
     avg_speed = summary.get("average_tokens_per_sec") or (round(total_tokens / total_elapsed, 1) if total_elapsed > 0 else 0.0)
+    step_count = summary.get("total_steps") or (steps_data[-1]["step"] if steps_data else 0)
 
     # 1. Metadata Panel
     meta_table = Table(box=box.ROUNDED, header_style="bold magenta", show_header=False)
@@ -196,8 +211,8 @@ def main():
     meta_table.add_row("Effective Batch Size", str(meta.get("effective_batch_size", "N/A")))
     meta_table.add_row("Peak Learning Rate", f"{meta.get('learning_rate', 0):.2e}")
     meta_table.add_row("Sequence Length", str(meta.get("max_seq_length", 256)))
-    meta_table.add_row("Total Steps Recorded", str(len(steps_data)))
-    meta_table.add_row("Elapsed Training Time", f"{total_elapsed:.2f}s")
+    meta_table.add_row("Steps Completed", str(step_count))
+    meta_table.add_row("Total Training Time", format_duration(total_elapsed))
     meta_table.add_row("Total Tokens Processed", f"{total_tokens:,}")
     meta_table.add_row("Average Throughput", f"{avg_speed:.1f} tokens/s")
 
@@ -249,7 +264,39 @@ def main():
     console.print(sum_table)
     console.print()
 
-    # 3. Matplotlib Graphical Plots
+    # 3. Dedicated Training Time & Efficiency Report
+    time_table = Table(
+        title="Training Time & Efficiency Report",
+        box=box.ROUNDED,
+        header_style="bold magenta",
+        title_justify="left",
+    )
+    time_table.add_column("Time Metric", style="cyan", width=30)
+    time_table.add_column("Measurement / Value", style="green")
+
+    avg_step_time = (total_elapsed / step_count) if step_count > 0 else 0.0
+    steps_per_sec = (step_count / total_elapsed) if total_elapsed > 0 else 0.0
+    sec_per_1k_tokens = (1000.0 / avg_speed) if avg_speed > 0 else 0.0
+    planned_steps = meta.get("total_planned_steps", 300)
+    est_total_planned_time = planned_steps * avg_step_time
+
+    best_step = summary.get("best_step", "N/A")
+    best_loss_val = summary.get("best_loss", "N/A")
+    best_acc_val = summary.get("best_accuracy", "N/A")
+
+    time_table.add_row("Total Training Elapsed Time", format_duration(total_elapsed))
+    time_table.add_row("Average Duration per Step", f"{avg_step_time:.3f} seconds / step")
+    time_table.add_row("Average Duration per 100 Steps", format_duration(avg_step_time * 100))
+    time_table.add_row("Step Frequency (Steps/Sec)", f"{steps_per_sec:.2f} steps / second")
+    time_table.add_row("Token Processing Throughput", f"{avg_speed:.1f} tokens / second")
+    time_table.add_row("Time per 1,000 Story Tokens", f"{sec_per_1k_tokens:.2f} seconds")
+    time_table.add_row("Best Model Achieved At", f"Step {best_step} (Loss: {best_loss_val}, Acc: {best_acc_val}%)")
+    time_table.add_row(f"Projected Full Run Time ({planned_steps} Steps)", format_duration(est_total_planned_time))
+
+    console.print(time_table)
+    console.print()
+
+    # 4. Matplotlib Graphical Plots
     console.rule("[bold cyan]Matplotlib Graphical Dashboard[/bold cyan]")
     with console.status("[bold green]Generating Matplotlib plots..."):
         plot_path = generate_matplotlib_plots(data, PLOT_OUTPUT_FILE)
@@ -267,7 +314,7 @@ def main():
         )
         console.print()
 
-    # 4. Terminal Visual Diagrams
+    # 5. Terminal Visual Diagrams
     console.rule("[bold cyan]Terminal Convergence Diagrams[/bold cyan]")
     console.print()
 
@@ -297,7 +344,7 @@ def main():
     console.print(Panel(acc_chart, box=box.ROUNDED, border_style="cyan"))
     console.print()
 
-    # 5. Step History Snapshot Table
+    # 6. Step History Snapshot Table
     history_table = Table(
         title=f"Step Progression Snapshot (Last {min(10, len(steps_data))} Logged Steps)",
         box=box.ROUNDED,

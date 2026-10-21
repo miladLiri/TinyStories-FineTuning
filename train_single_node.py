@@ -3,7 +3,8 @@ train_single_node.py
 
 Fine-tunes TinyStories-1M on instruction-based prompts using Hugging Face Transformers.
 Hardcodes all hyperparameters at the top of the file.
-Uses training set samples to track training loss, perplexity, and token accuracy.
+Tracks training loss, perplexity, and token accuracy.
+Only saves the SINGLE BEST checkpoint (lowest loss / highest accuracy) to disk.
 Auto-detects CUDA / CPU and records comprehensive LLM metrics on-the-go to JSON.
 """
 
@@ -38,6 +39,7 @@ if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
 MODEL_PATH = "./artifacts/model"
 TRAIN_DATA_PATH = "./fine-tuning-dataset/train.json"
 OUTPUT_DIR = "./single_node_finetuning"
+BEST_CHECKPOINT_DIR = "./single_node_finetuning/best_checkpoint"
 METRICS_FILE = "./single_node_finetuning/training_metrics.json"
 
 # Optimization & Batching
@@ -52,9 +54,8 @@ NUM_EPOCHS = 1                    # Number of training epochs
 MAX_STEPS = 300                   # Maximum steps (set to None for full epoch)
 WARMUP_STEPS = 20                 # Linear warmup steps
 
-# Logging & Checkpointing intervals
-LOG_EVERY_STEPS = 5               # Log metrics every N steps
-SAVE_EVERY_STEPS = 50             # Save model checkpoint every N steps
+# Logging intervals
+LOG_EVERY_STEPS = 5               # Log metrics and check best checkpoint every N steps
 
 # Dataset limits
 MAX_TRAIN_SAMPLES = 5000          # Training subset size
@@ -137,6 +138,7 @@ def main():
 
     out_dir = Path(OUTPUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
+    best_ckpt_path = Path(BEST_CHECKPOINT_DIR)
 
     # 1. Device Selection (CUDA if available, otherwise CPU)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -148,17 +150,24 @@ def main():
         print(f"[*] GPU Model:           {torch.cuda.get_device_name(0)}")
         print(f"[*] VRAM Available:      {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
     print(f"[*] Output Directory:    {out_dir.resolve()}")
+    print(f"[*] Best Checkpoint:     {best_ckpt_path.resolve()} (single best only)")
     print(f"[*] Metrics Output:      {Path(METRICS_FILE).resolve()}")
     print("=" * 65)
 
     # 2. Load Tokenizer & Model
+    model_dir = Path(MODEL_PATH)
+    if not model_dir.exists() or not (model_dir / "config.json").exists():
+        print(f"[bold red]Error:[/bold red] Base model not found in '{model_dir.resolve()}'.")
+        print("[yellow]Please run 'python download_artifacts.py' first to download the model.[/yellow]\n")
+        return
+
     print(f"[*] Loading tokenizer & model from '{MODEL_PATH}'...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+    tokenizer = AutoTokenizer.from_pretrained(str(model_dir.resolve()))
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+    model = AutoModelForCausalLM.from_pretrained(str(model_dir.resolve()))
     model.to(device)
     model.train()
 
@@ -222,7 +231,11 @@ def main():
     loss_window = []
     acc_window = []
     start_time = time.time()
-    last_log_time = start_time
+
+    # Track best model
+    best_loss = float("inf")
+    best_step = 0
+    best_acc = 0.0
 
     try:
         for epoch in range(NUM_EPOCHS):
@@ -270,7 +283,6 @@ def main():
                     if step_counter % LOG_EVERY_STEPS == 0:
                         cur_time = time.time()
                         elapsed = cur_time - start_time
-                        last_log_time = cur_time
 
                         avg_loss = sum(loss_window) / len(loss_window)
                         avg_acc = sum(acc_window) / len(acc_window)
@@ -300,26 +312,28 @@ def main():
                         }
                         metrics_data["steps"].append(step_metric)
 
+                        # Check and save ONLY the single best checkpoint
+                        is_best = avg_loss < best_loss
+                        if is_best:
+                            best_loss = avg_loss
+                            best_acc = avg_acc
+                            best_step = step_counter
+                            best_ckpt_path.mkdir(parents=True, exist_ok=True)
+                            model.save_pretrained(str(best_ckpt_path))
+                            tokenizer.save_pretrained(str(best_ckpt_path))
+
+                        best_flag = " [*BEST*]" if is_best else ""
                         print(
                             f"Step {step_counter:4d}/{total_steps} | "
                             f"Loss: {avg_loss:.4f} | "
                             f"PPL: {perplexity:6.2f} | "
                             f"Acc: {avg_acc:5.2f}% | "
-                            f"LR: {current_lr:.2e} | "
                             f"Speed: {tokens_per_sec:5.0f} tok/s | "
-                            f"Time: {elapsed:5.1f}s"
+                            f"Time: {elapsed:5.1f}s{best_flag}"
                         )
 
                         # Write metrics to JSON on the go
                         save_metrics_to_disk(metrics_data, METRICS_FILE)
-
-                    # Periodic Checkpoint Saving
-                    if step_counter % SAVE_EVERY_STEPS == 0:
-                        ckpt_dir = out_dir / f"checkpoint-{step_counter}"
-                        ckpt_dir.mkdir(parents=True, exist_ok=True)
-                        model.save_pretrained(str(ckpt_dir))
-                        tokenizer.save_pretrained(str(ckpt_dir))
-                        print(f"  [+] Saved checkpoint to {ckpt_dir.name}")
 
                     if MAX_STEPS is not None and step_counter >= MAX_STEPS:
                         break
@@ -333,11 +347,11 @@ def main():
     # Final Save
     total_elapsed = time.time() - start_time
     print("\n" + "=" * 65)
-    print(f"[*] Training finished in {total_elapsed:.2f}s ({step_counter} steps completed).")
-    print(f"[*] Saving final model & tokenizer to '{OUTPUT_DIR}'...")
+    print(f"[*] Training completed {step_counter} steps in {total_elapsed:.2f}s.")
+    print(f"[*] Best checkpoint achieved at Step {best_step} (Loss: {best_loss:.4f}, Acc: {best_acc:.2f}%).")
+    print(f"[*] Best checkpoint stored at: '{best_ckpt_path.resolve()}'")
 
-    model.save_pretrained(OUTPUT_DIR)
-    tokenizer.save_pretrained(OUTPUT_DIR)
+    # Only best_checkpoint is saved to disk; final state metrics saved below
 
     # Save summary
     first_loss = metrics_data["steps"][0]["loss"] if metrics_data["steps"] else None
@@ -359,12 +373,15 @@ def main():
         "final_perplexity": last_ppl,
         "initial_accuracy": first_acc,
         "final_accuracy": last_acc,
+        "best_step": best_step,
+        "best_loss": round(best_loss, 4) if best_loss != float("inf") else last_loss,
+        "best_accuracy": round(best_acc, 2) if best_loss != float("inf") else last_acc,
         "loss_reduction": round(first_loss - last_loss, 4) if (first_loss and last_loss) else 0,
         "accuracy_gain": round(last_acc - first_acc, 2) if (first_acc is not None and last_acc is not None) else 0,
     }
 
     save_metrics_to_disk(metrics_data, METRICS_FILE)
-    print(f"[✓] Final model and metrics successfully saved to '{OUTPUT_DIR}'.")
+    print(f"[✓] Best checkpoint and final metrics saved to '{OUTPUT_DIR}'.")
     print("=" * 65 + "\n")
 
 
