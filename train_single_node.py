@@ -216,6 +216,8 @@ def main():
             "learning_rate": LEARNING_RATE,
             "max_seq_length": MAX_SEQ_LENGTH,
             "total_planned_steps": total_steps,
+            "num_epochs": NUM_EPOCHS,
+            "steps_per_epoch": len(train_loader) // GRAD_ACCUM_STEPS,
             "start_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         },
         "steps": [],
@@ -223,7 +225,7 @@ def main():
     }
 
     print("\n" + "=" * 65)
-    print(f"[*] Starting training loop: {total_steps} planned steps...")
+    print(f"[*] Starting training loop: {total_steps} planned steps ({NUM_EPOCHS} epoch(s))...")
     print("=" * 65)
 
     step_counter = 0
@@ -235,6 +237,7 @@ def main():
     # Track best model
     best_loss = float("inf")
     best_step = 0
+    best_epoch = 0.0
     best_acc = 0.0
 
     try:
@@ -298,9 +301,10 @@ def main():
                         if device.type == "cuda":
                             vram_mb = torch.cuda.memory_allocated(0) / (1024 * 1024)
 
+                        cur_epoch = round(epoch + (batch_idx + 1) / len(train_loader), 3)
                         step_metric = {
                             "step": step_counter,
-                            "epoch": round(epoch + (batch_idx + 1) / len(train_loader), 3),
+                            "epoch": cur_epoch,
                             "loss": round(avg_loss, 4),
                             "perplexity": round(perplexity, 2),
                             "accuracy": round(avg_acc, 2),
@@ -318,13 +322,14 @@ def main():
                             best_loss = avg_loss
                             best_acc = avg_acc
                             best_step = step_counter
+                            best_epoch = cur_epoch
                             best_ckpt_path.mkdir(parents=True, exist_ok=True)
                             model.save_pretrained(str(best_ckpt_path))
                             tokenizer.save_pretrained(str(best_ckpt_path))
 
                         best_flag = " [*BEST*]" if is_best else ""
                         print(
-                            f"Step {step_counter:4d}/{total_steps} | "
+                            f"Step {step_counter:4d}/{total_steps} (Ep {cur_epoch:.2f}/{NUM_EPOCHS}) | "
                             f"Loss: {avg_loss:.4f} | "
                             f"PPL: {perplexity:6.2f} | "
                             f"Acc: {avg_acc:5.2f}% | "
@@ -346,9 +351,10 @@ def main():
 
     # Final Save
     total_elapsed = time.time() - start_time
+    final_epoch = metrics_data["steps"][-1]["epoch"] if metrics_data["steps"] else 0.0
     print("\n" + "=" * 65)
-    print(f"[*] Training completed {step_counter} steps in {total_elapsed:.2f}s.")
-    print(f"[*] Best checkpoint achieved at Step {best_step} (Loss: {best_loss:.4f}, Acc: {best_acc:.2f}%).")
+    print(f"[*] Training completed {step_counter} steps ({final_epoch:.2f} epochs) in {total_elapsed:.2f}s.")
+    print(f"[*] Best checkpoint achieved at Step {best_step} (Epoch {best_epoch:.2f}) [Loss: {best_loss:.4f}, Acc: {best_acc:.2f}%].")
     print(f"[*] Best checkpoint stored at: '{best_ckpt_path.resolve()}'")
 
     # Only best_checkpoint is saved to disk; final state metrics saved below
@@ -364,6 +370,7 @@ def main():
     metrics_data["summary"] = {
         "status": "completed" if (MAX_STEPS and step_counter >= MAX_STEPS) else "finished",
         "total_steps": step_counter,
+        "total_epochs_trained": final_epoch,
         "total_elapsed_sec": round(total_elapsed, 2),
         "total_tokens_processed": total_tokens_processed,
         "average_tokens_per_sec": round(total_tokens_processed / total_elapsed, 1) if total_elapsed > 0 else 0,
@@ -374,6 +381,7 @@ def main():
         "initial_accuracy": first_acc,
         "final_accuracy": last_acc,
         "best_step": best_step,
+        "best_epoch": best_epoch,
         "best_loss": round(best_loss, 4) if best_loss != float("inf") else last_loss,
         "best_accuracy": round(best_acc, 2) if best_loss != float("inf") else last_acc,
         "loss_reduction": round(first_loss - last_loss, 4) if (first_loss and last_loss) else 0,
