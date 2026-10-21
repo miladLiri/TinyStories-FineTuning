@@ -46,23 +46,23 @@ BEST_CHECKPOINT_DIR = "./single_node_finetuning/best_checkpoint"
 METRICS_FILE = "./single_node_finetuning/training_metrics.json"
 
 # Optimization & Batching
-BATCH_SIZE = 8                    # Batch size per step (low VRAM usage: <1GB)
-GRAD_ACCUM_STEPS = 2              # Effective batch size = 16
-LEARNING_RATE = 3e-4              # Initial learning rate for AdamW
-WEIGHT_DECAY = 0.01               # Weight decay for regularization
-MAX_SEQ_LENGTH = 256              # Max sequence length (tokens)
+BATCH_SIZE = 16                   # Batch size per step (utilizes GTX 1650 Ti VRAM safely, ~200MB)
+GRAD_ACCUM_STEPS = 2             # Effective batch size = 32 (reduces gradient variance)
+LEARNING_RATE = 8e-5             # Calibrated fine-tuning learning rate (prevents weight thrashing)
+WEIGHT_DECAY = 0.01              # Weight decay for regularization
+MAX_SEQ_LENGTH = 288             # Max sequence length (captures >95% of full stories)
 
 # Steps & Epochs
-NUM_EPOCHS = 1                    # Number of training epochs
-MAX_STEPS = 300                   # Maximum steps (set to None for full epoch)
-WARMUP_STEPS = 20                 # Linear warmup steps
+NUM_EPOCHS = 6                   # Number of training epochs
+MAX_STEPS = None                 # Set to None for full epoch training (or integer to limit steps)
+WARMUP_STEPS = 60                # Gentle linear warmup steps
 
 # Logging intervals
-LOG_EVERY_STEPS = 5               # Log metrics and check best checkpoint every N steps
+LOG_EVERY_STEPS = 5              # Log metrics and check best checkpoint every N steps
 
 # Dataset limits
-MAX_TRAIN_SAMPLES = 5000          # Training subset size
-SEED = 42                         # Random seed for reproducibility
+MAX_TRAIN_SAMPLES = 10000        # Training subset size (expanded from 5,000 for higher accuracy)
+SEED = 42                        # Random seed for reproducibility
 # ==============================================================================
 
 
@@ -226,7 +226,9 @@ class MetricsTrackingCallback(TrainerCallback):
             perplexity = math.exp(min(avg_loss, 20.0))
 
             current_lr = 0.0
-            if trainer and trainer.optimizer and trainer.optimizer.param_groups:
+            if trainer and trainer.lr_scheduler:
+                current_lr = trainer.lr_scheduler.get_last_lr()[0]
+            elif trainer and trainer.optimizer and trainer.optimizer.param_groups:
                 current_lr = trainer.optimizer.param_groups[0]["lr"]
             elif state.log_history:
                 current_lr = state.log_history[-1].get("learning_rate", 0.0)
