@@ -46,16 +46,16 @@ BEST_CHECKPOINT_DIR = "./single_node_finetuning/best_checkpoint"
 METRICS_FILE = "./single_node_finetuning/training_metrics.json"
 
 # Optimization & Batching
-BATCH_SIZE = 16                   # Batch size per step (utilizes GTX 1650 Ti VRAM safely, ~200MB)
+BATCH_SIZE = 64                   # Batch size per step (utilizes GTX 1650 Ti VRAM safely, ~200MB)
 GRAD_ACCUM_STEPS = 2             # Effective batch size = 32 (reduces gradient variance)
-LEARNING_RATE = 8e-5             # Calibrated fine-tuning learning rate (prevents weight thrashing)
+LEARNING_RATE = 1e-4             # Calibrated fine-tuning learning rate (prevents weight thrashing)
 WEIGHT_DECAY = 0.01              # Weight decay for regularization
 MAX_SEQ_LENGTH = 288             # Max sequence length (captures >95% of full stories)
 
 # Steps & Epochs
-NUM_EPOCHS = 6                   # Number of training epochs
+NUM_EPOCHS = 10                   # Number of training epochs
 MAX_STEPS = None                 # Set to None for full epoch training (or integer to limit steps)
-WARMUP_STEPS = 60                # Gentle linear warmup steps
+WARMUP_STEPS = 50                # Gentle linear warmup steps
 
 # Logging intervals
 LOG_EVERY_STEPS = 5              # Log metrics and check best checkpoint every N steps
